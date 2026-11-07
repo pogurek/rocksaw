@@ -65,6 +65,9 @@ echo "$(dirname "$JDK_BIN")/lib" | sudo tee /etc/ld.so.conf.d/java-raw.conf
 sudo ldconfig
 ```
 
+In fish, set `JDK_BIN` with `set JDK_BIN (dirname (readlink -f (which java)))`;
+the other commands work unchanged.
+
 Check the setup:
 
 ```bash
@@ -78,6 +81,13 @@ Optionally, put `java-raw` on your PATH, for example in `~/.bashrc`:
 
 ```bash
 alias java-raw="$JDK_BIN/java-raw"   # replace $JDK_BIN with the actual path
+```
+
+In fish, define the alias once and save it as a function:
+
+```fish
+alias java-raw /path/to/jdk/bin/java-raw   # replace with the actual path
+funcsave java-raw
 ```
 
 The setup belongs to one JDK. If you upgrade or remove that JDK, repeat
@@ -102,6 +112,26 @@ java-raw --enable-native-access=ALL-UNNAMED \
     -cp "$CP" \
     org.junit.runner.JUnitCore rocksaw.TestPing
 ```
+
+The same in fish:
+
+```fish
+set M ~/.m2/repository
+set CP target/classes:target/test-classes
+set CP $CP:$M/com/github/mlaccetti/vserv-tcpip/0.9.2.1/vserv-tcpip-0.9.2.1.jar
+set CP $CP:$M/junit/junit/4.12/junit-4.12.jar
+set CP $CP:$M/org/hamcrest/hamcrest-core/1.3/hamcrest-core-1.3.jar
+set CP $CP:$M/org/slf4j/slf4j-api/1.7.19/slf4j-api-1.7.19.jar
+set CP $CP:$M/org/slf4j/slf4j-simple/1.7.19/slf4j-simple-1.7.19.jar
+
+java-raw --enable-native-access=ALL-UNNAMED \
+    -Dorg.slf4j.simpleLogger.defaultLogLevel=debug \
+    -cp "$CP" \
+    org.junit.runner.JUnitCore rocksaw.TestPing
+```
+
+To run other test classes, such as `rocksaw.RawSocketTest`, list them after
+`org.junit.runner.JUnitCore`.
 
 `-Dorg.slf4j.simpleLogger.defaultLogLevel=debug` prints each ping. Without it
 you only see the result line. Expected output:
