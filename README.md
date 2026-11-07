@@ -54,8 +54,11 @@ capability is enough. Without privileges `TestPing` is skipped; to run it
 on Linux without root, use a user and network namespace:
 
   ```
-  unshare -rn sh -c 'ip link set lo up && mvn -o test'
+  unshare -rn sh -c "ip link set lo up && mvn -o -Dmaven.repo.local=$HOME/.m2/repository test"
   ```
+
+See [TESTING.md](TESTING.md) for details, and for a one-time setup that
+lets a group of users run raw-socket Java programs without root.
 
 ### Licensing
 
