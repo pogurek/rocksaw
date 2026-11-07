@@ -1,3 +1,15 @@
+Release Notes - RockSaw - Unreleased
+
+** Improvement
+   * [No Issue] - Replace the JNI library with the Java 22 Foreign Function
+                  & Memory API; RockSaw is now pure Java (requires Java 22+)
+   * [No Issue] - Read/write timeouts throw SocketTimeoutException (a
+                  subclass of InterruptedIOException)
+   * [No Issue] - RawSocket implements Closeable; closing a closed socket
+                  is a no-op
+   * [No Issue] - getProtocolByName returns -1 for unknown names instead
+                  of crashing
+
 Release Notes - RockSaw - Version 1.0.1
 
 ** Task

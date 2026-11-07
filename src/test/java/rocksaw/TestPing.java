@@ -17,6 +17,7 @@
 package rocksaw;
 
 import com.savarese.rocksaw.net.RawSocket;
+import org.junit.Assume;
 import org.junit.Test;
 import org.savarese.vserv.tcpip.ICMPEchoPacket;
 import org.savarese.vserv.tcpip.ICMPPacket;
@@ -56,10 +57,17 @@ import static org.savarese.vserv.tcpip.ICMPPacket.OFFSET_ICMP_CHECKSUM;
 public class TestPing {
   private static final Logger log = LoggerFactory.getLogger(TestPing.class);
 
-  @Test
-  public void testPingLocalhost() {
+  @Test(timeout = 30000)
+  public void testPingLocalhost() throws Exception {
     final String localhost = "localhost";
     final int pingCount = 5;
+
+    // Raw sockets need root or CAP_NET_RAW; skip rather than fail without them.
+    try (RawSocket probe = new RawSocket()) {
+      probe.open(PF_INET, getProtocolByName("icmp"));
+    } catch (final IOException e) {
+      Assume.assumeNoException("Raw sockets are not permitted", e);
+    }
 
     final ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(2);
 
@@ -135,9 +143,8 @@ public class TestPing {
       }
 
       ping.close();
-    } catch (final Exception e) {
-      executor.shutdown();
-      e.printStackTrace();
+    } finally {
+      executor.shutdownNow();
     }
   }
 

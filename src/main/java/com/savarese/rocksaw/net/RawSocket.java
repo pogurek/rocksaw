@@ -16,10 +16,11 @@
 
 package com.savarese.rocksaw.net;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.InterruptedIOException;
-import java.net.InetAddress;
 import java.net.Inet6Address;
+import java.net.InetAddress;
 import java.net.SocketException;
 
 /**
@@ -27,95 +28,48 @@ import java.net.SocketException;
  * performing I/O with IPv4 and IPv6 raw sockets.  The API is
  * minimalist, yet functional.</p>
  *
- * <p>We throw java.io.InterruptedIOException when read/write
- * operations time out because java.net.SocketTimeoutException is
- * present only in J2SE 1.4 and up.  By using InterruptedIOException,
- * we allow programmers to use the software with J2SE 1.2 and 1.3.</p>
+ * <p>The native socket functions are called through the Java 22
+ * Foreign Function &amp; Memory API, so no JNI library is needed.
+ * Linux, macOS and Windows on 64-bit JVMs are supported.  Grant native
+ * access to avoid JVM warnings, e.g. with
+ * {@code --enable-native-access=ALL-UNNAMED}.</p>
+ *
+ * <p>Read and write timeouts throw {@link java.net.SocketTimeoutException},
+ * which is a subclass of {@link InterruptedIOException}.</p>
  *
  * <p>Socket options should not be set until the socket has been
  * opened.</p>
  *
  * <p><em>Important!  On most operating systems, you must have root
- * access or administrative privileges to use raw sockets.</em></p>
+ * access or administrative privileges to use raw sockets.</em>  On Linux,
+ * the {@code CAP_NET_RAW} capability is enough.</p>
  */
-public class RawSocket {
+public class RawSocket implements Closeable {
 
-  private native static int __PF_INET();
-  private native static int __PF_INET6();
+  private static final Platform platform = Platform.INSTANCE;
 
   /**
    * A protocol family constant for {@link #open} indicating IPv4.
    * <em>This should be moved to another class.</em>
    */
-  public static final int PF_INET;
+  public static final int PF_INET = platform.afInet();
 
   /**
    * A protocol family constant for {@link #open} indicating IPv6.
    * <em>This should be moved to another class.</em>
    */
-  public static final int PF_INET6;
+  public static final int PF_INET6 = platform.afInet6();
 
-  /**
-   * Initializes any system resources used by the RockSaw library.
-   * Really, all it does is call WSAStartup on Win32.  It may be
-   * called multiple times (only the first call has any effect), but
-   * each call must be matched with a corresponding call to
-   * RockSawShutdown().
-   *
-   * @return zero if successful, otherwise some non-zero value.
-   */
-  private native static int __RockSawStartup();
+  private static final int UNDEFINED = -1;
 
-  /**
-   * Deallocates any system resources used by the RockSaw library.
-   * Really, all it does is call WSACleanup on Win32.
-   */
-  private native static void __RockSawShutdown();
+  private long socket = UNDEFINED;
+  private int family = UNDEFINED;
+  private int sendTimeout, receiveTimeout;
+  private boolean useSelectTimeout;
 
-  static {
-    System.loadLibrary("rocksaw");
-    if(__RockSawStartup() != 0)
-      throw new UnsatisfiedLinkError(__getErrorMessage());
-
-    Runtime.getRuntime().addShutdownHook(new Thread() {
-        public void run() {
-          __RockSawShutdown();
-        }
-      });
-
-    PF_INET  = __PF_INET();
-    PF_INET6 = __PF_INET6();
-  }
-
-  private static final int __UNDEFINED = -1;
-
-  private int __socket;
-  private int __family;
-  private int __stimeout, __rtimeout;
-  private boolean __useSelectTimeout;
-
-  /**
-   * Creates an uninitialized socket.  If the {@code os.name} system
-   * property starts with the string "SunOS",
-   * {@link #setUseSelectTimeout} is set to true (because Solaris does not
-   * support socket send and receive timeouts), otherwise it is false
-   * by default.
-   */
+  /** Creates an uninitialized socket. */
   public RawSocket() {
-    __socket = __UNDEFINED;
-    __family = __UNDEFINED;
-    __stimeout = 0;
-    __rtimeout = 0;
-
-    String os = System.getProperty("os.name");
-
-    if(os != null && os.startsWith("SunOS")) {
-      setUseSelectTimeout(true);
-    } else {
-      setUseSelectTimeout(false);
-    }
   }
-
 
   /**
    * Tests if the socket has been opened.
@@ -123,49 +77,15 @@ public class RawSocket {
    * @return True if the socket is open.
    */
   public boolean isOpen() {
-    return (__socket > 0);
+    return socket != UNDEFINED;
   }
 
-
-  /**
-   * Writes a system error message into a StringBuffer.
-   * The message is appended to the supplied StringBuffer argument.
-   * This is a thread safe call on systems that support per-thread
-   * instances of errno.
-   *
-   * @param buffer The buffer in which to store the error message.
-   */
-  private native static void __getErrorMessage(StringBuffer buffer);
-
-  private static String __getErrorMessage() {
-    StringBuffer buf = new StringBuffer();
-    __getErrorMessage(buf);
-    return buf.toString();
-  }
-
-  private static void __throwIOException() throws IOException {
-    throw new IOException(__getErrorMessage());
-  }
-
-  private static void __throwSocketException() throws SocketException {
-    throw new SocketException(__getErrorMessage());
-  }
-
-  private static void __throwInterruptedIOException()
-    throws InterruptedIOException
-  {
-    throw new InterruptedIOException(__getErrorMessage());
-  }
-
-  private int __getScopeId(InetAddress address) {
-    if(__family == PF_INET6 && address instanceof Inet6Address) {
-      return ((Inet6Address)address).getScopeId();
+  private int getScopeId(InetAddress address) {
+    if (family == PF_INET6 && address instanceof Inet6Address inet6) {
+      return inet6.getScopeId();
     }
     return 0;
   }
-
-  private native static int __socket(int protocolFamily, int protocol);
-
 
   /**
    * <p>Returns the protocol number corresponding to the given protocol name.
@@ -180,11 +100,9 @@ public class RawSocket {
    * @return The protocol number corresponding to the given protocol name.
    *         If the protocol name cannot be found, returns a negative value.
    */
-  public native static final int getProtocolByName(String name);
-
-  private native static
-  int __query_routing_interface(int socket, int family,
-                                byte[] destination, byte[] source);
+  public static final int getProtocolByName(String name) {
+    return platform.protocolByName(name);
+  }
 
   /**
    * <p>Returns by out parameter the address of the network interface that
@@ -202,13 +120,12 @@ public class RawSocket {
    * left unchanged.
    * @exception IOException If an I/O error occurs.
    */
-  public void
-  getSourceAddressForDestination(InetAddress destination, byte[] source)
+  public void getSourceAddressForDestination(InetAddress destination,
+                                             byte[] source)
     throws IOException
   {
-    if(__query_routing_interface(__socket, __family,
-                                 destination.getAddress(), source) < 0)
-      __throwIOException();
+    platform.sourceAddressForDestination(socket, family,
+                                         destination.getAddress(), source);
   }
 
   /**
@@ -225,21 +142,12 @@ public class RawSocket {
   public void open(int protocolFamily, int protocol)
     throws IllegalStateException, IOException
   {
-    if(isOpen())
+    if (isOpen()) {
       throw new IllegalStateException();
-    __socket = __socket(protocolFamily, protocol);
-
-    if(__socket < 0) {
-      __socket = __UNDEFINED;
-      __throwIOException();
     }
-
-    __family = protocolFamily;
+    socket = platform.socket(protocolFamily, protocol);
+    family = protocolFamily;
   }
-
-
-  private native static int __bind(int socket, int family, byte[] address,
-                                   int scope_id);
 
   /**
    * Binds a local network address to a previously opened raw socket.
@@ -256,19 +164,11 @@ public class RawSocket {
   public void bind(InetAddress address)
     throws IllegalStateException, IOException
   {
-    int scope_id = __getScopeId(address);
-
-    if(!isOpen()) {
+    if (!isOpen()) {
       throw new IllegalStateException();
     }
-
-    if(__bind(__socket, __family, address.getAddress(), scope_id) != 0) {
-      __throwIOException();
-    }
+    platform.bind(socket, family, address.getAddress(), getScopeId(address));
   }
-
-  // Returns a positive value if unsupported operation.
-  private native static int __bindDevice(int socket, String device);
 
   /**
    * Binds a network device (e.g., eth0) to a previously opened raw socket.
@@ -288,46 +188,27 @@ public class RawSocket {
   public void bindDevice(String device)
     throws UnsupportedOperationException, IllegalStateException, IOException
   {
-    if(!isOpen())
+    if (!isOpen()) {
       throw new IllegalStateException();
-
-    int result = __bindDevice(__socket, device);
-
-    if(result < 0)
-      __throwIOException();
-    else if(result > 0)
-      throw new UnsupportedOperationException();
+    }
+    platform.bindDevice(socket, device);
   }
 
-  private native static int __close(int socket);
-
   /**
-   * Closes the socket.
+   * Closes the socket.  Closing a socket that is not open has no effect.
    *
    * @exception IOException If an I/O error occurs.
    */
+  @Override
   public void close() throws IOException {
-    int result = __close(__socket);
-    __socket = __UNDEFINED;
-    __family = __UNDEFINED;
-
-    if(result != 0)
-      __throwIOException();
+    if (!isOpen()) {
+      return;
+    }
+    long s = socket;
+    socket = UNDEFINED;
+    family = UNDEFINED;
+    platform.close(s);
   }
-
-  /**
-   * @return True if errno equals EAGAIN or EWOULDBLOCK.
-   */
-  private native boolean __isErrorEAGAIN();
-
-  private native static int __setIPHeaderInclude(int socket, boolean on);
-
-  /**
-   * @return A negative value if an error occurs, else zero for false and
-   *         a positive value for true.
-   */
-  private native static int __getIPHeaderInclude(int socket);
-
 
   /**
    * Sets or unsets the IP_HDRINCL socket option.  Setting this option
@@ -339,12 +220,8 @@ public class RawSocket {
    * @exception SocketException If the option setting could not be altered.
    */
   public void setIPHeaderInclude(boolean on) throws SocketException {
-    int result = __setIPHeaderInclude(__socket, on);
-
-    if(result < 0)
-      __throwSocketException();
+    platform.setIPHeaderInclude(socket, on);
   }
-
 
   /**
    * Retrieves the current setting of the IP_HDRINCL option.
@@ -353,16 +230,8 @@ public class RawSocket {
    * @exception SocketException If the option value could not be retrieved.
    */
   public boolean getIPHeaderInclude() throws SocketException {
-    int result = __getIPHeaderInclude(__socket);
-
-    if(result < 0)
-      __throwSocketException();
-
-    return (result > 0);
+    return platform.getIPHeaderInclude(socket);
   }
-
-
-  private native static int __setSendBufferSize(int socket, int size);
 
   /**
    * Sets the send buffer size (SO_SNDBUF).
@@ -371,14 +240,8 @@ public class RawSocket {
    * @exception SocketException If the option value could not be set.
    */
   public void setSendBufferSize(int size) throws SocketException {
-    int result = __setSendBufferSize(__socket, size);
-
-    if(result < 0)
-      __throwSocketException();
+    platform.setBufferSize(socket, true, size);
   }
-
-
-  private native static int __getSendBufferSize(int __socket);
 
   /**
    * Retrieves the send buffer size (SO_SNDBUF).
@@ -387,16 +250,8 @@ public class RawSocket {
    * @exception SocketException If the option value could not be retrieved.
    */
   public int getSendBufferSize() throws SocketException {
-    int result = __getSendBufferSize(__socket);
-
-    if(result < 0)
-      __throwSocketException();
-
-    return result;
+    return platform.getBufferSize(socket, true);
   }
-
-
-  private native static int __setReceiveBufferSize(int socket, int size);
 
   /**
    * Sets the receive buffer size (SO_RCVBUF).
@@ -405,14 +260,8 @@ public class RawSocket {
    * @exception SocketException If the option value could not be set.
    */
   public void setReceiveBufferSize(int size) throws SocketException {
-    int result = __setReceiveBufferSize(__socket, size);
-
-    if(result < 0)
-      __throwSocketException();
+    platform.setBufferSize(socket, false, size);
   }
-
-
-  private native static int __getReceiveBufferSize(int socket);
 
   /**
    * Retrieves the receive buffer size (SO_RCVBUF).
@@ -421,52 +270,33 @@ public class RawSocket {
    * @exception SocketException If the option value could not be retrieved.
    */
   public int getReceiveBufferSize() throws SocketException {
-    int result = __getReceiveBufferSize(__socket);
-
-    if(result < 0)
-      __throwSocketException();
-
-    return result;
+    return platform.getBufferSize(socket, false);
   }
-
-  /**
-   * @return Zero if the socket is ready for I/O, negative value if
-   * timed out or error occurred.
-   */
-  private native static
-    int __select(int socket, boolean read, int milliseconds);
-
 
   /**
    * <p>Sets whether or not socket send/receive timeouts should be
-   * emulated by using the POSIX {@code select} function.  Not all
-   * platforms support socket send/receive timeouts and this method
-   * provides a means to reproduce the same effect.</p>
+   * emulated by waiting for readiness with the POSIX {@code poll}
+   * function ({@code WSAPoll} on Windows).  Not all platforms support
+   * socket send/receive timeouts and this method provides a means to
+   * reproduce the same effect.</p>
    *
-   * @param useSelect true if {@code select} should be used to
+   * @param useSelect true if {@code poll} should be used to
    * implement timeouts, false if not.
    */
   public void setUseSelectTimeout(boolean useSelect) {
-    __useSelectTimeout = useSelect;
+    useSelectTimeout = useSelect;
   }
-
 
   /**
    * <p>Determines whether or not socket send/receive timeouts are
-   * emulated by using the POSIX {@code select} system function.
-   * Not all platforms support socket send/receive timeouts.  The
-   * default value is false except for platforms where the {@code
-   * os.name} property starts with the string "SunOS".</p>
+   * emulated by using {@code poll}.  The default value is false.</p>
    *
-   * @return True if send/receive timeouts are emulated with select,
+   * @return True if send/receive timeouts are emulated with poll,
    * false if not.
    */
   public boolean getUseSelectTimeout() {
-    return __useSelectTimeout;
+    return useSelectTimeout;
   }
-
-
-  private native static int __setSendTimeout(int socket, int timeout);
 
   /**
    * Sets the send timeout (SO_SNDTIMEO).  A timeout of zero indicates
@@ -476,19 +306,12 @@ public class RawSocket {
    * @exception SocketException If the option value could not be set.
    */
   public void setSendTimeout(int timeout) throws SocketException {
-    __stimeout = timeout;
+    sendTimeout = timeout;
 
-    if(!getUseSelectTimeout()) {
-      int result = __setSendTimeout(__socket, timeout);
-
-      if(result < 0) {
-        __throwSocketException();
-      }
+    if (!getUseSelectTimeout()) {
+      platform.setTimeout(socket, true, timeout);
     }
   }
-
-
-  private native static int __getSendTimeout(int socket);
 
   /**
    * Retrieves the send timeout (SO_SNDTIMEO).
@@ -497,23 +320,10 @@ public class RawSocket {
    * @exception SocketException If the option value could not be set.
    */
   public int getSendTimeout() throws SocketException {
-    int result;
-
-    if(getUseSelectTimeout()) {
-      result = __stimeout;
-    } else {
-      result = __getSendTimeout(__socket);
-
-      if(result < 0) {
-        __throwSocketException();
-      }
-    }
-
-    return result;
+    return getUseSelectTimeout()
+      ? sendTimeout
+      : platform.getTimeout(socket, true);
   }
-
-
-  private native static int __setReceiveTimeout(int socket, int timeout);
 
   /**
    * Sets the receive timeout (SO_RCVTIMEO).  A timeout of zero indicates
@@ -523,19 +333,12 @@ public class RawSocket {
    * @exception SocketException If the option value could not be set.
    */
   public void setReceiveTimeout(int timeout) throws SocketException {
-    __rtimeout = timeout;
+    receiveTimeout = timeout;
 
-    if(!getUseSelectTimeout()) {
-      int result = __setReceiveTimeout(__socket, timeout);
-
-      if(result < 0) {
-        __throwSocketException();
-      }
+    if (!getUseSelectTimeout()) {
+      platform.setTimeout(socket, false, timeout);
     }
   }
-
-
-  private native static int __getReceiveTimeout(int socket);
 
   /**
    * Retrieves the receive timeout (SO_RCVTIMEO).
@@ -544,27 +347,10 @@ public class RawSocket {
    * @exception SocketException If the option value could not be set.
    */
   public int getReceiveTimeout() throws SocketException {
-    int result;
-
-    if(getUseSelectTimeout()) {
-      result = __rtimeout;
-    } else {
-      result = __getReceiveTimeout(__socket);
-
-      if(result < 0) {
-        __throwSocketException();
-      }
-    }
-
-    return result;
+    return getUseSelectTimeout()
+      ? receiveTimeout
+      : platform.getTimeout(socket, false);
   }
-
-
-  private native static int __recvfrom1(int socket, byte[] data, int offset,
-                                        int length, int family);
-  private native static int __recvfrom2(int socket, byte[] data, int offset,
-                                        int length, int family,
-                                        byte[] address);
 
   /**
    * Reads packet data from the socket.  IPv4 ({@link #PF_INET})
@@ -589,37 +375,24 @@ public class RawSocket {
   public int read(byte[] data, int offset, int length, byte[] address)
     throws IllegalArgumentException, IOException, InterruptedIOException
   {
-    if(offset < 0 || length < 0 || length > data.length - offset)
+    if (offset < 0 || length < 0 || length > data.length - offset) {
       throw new IllegalArgumentException("Invalid offset or length.");
+    }
 
-    if(address != null &&
-       ((__family == PF_INET && address.length != 4) ||
-        (__family == PF_INET6 && address.length != 16)))
+    if (address != null &&
+        ((family == PF_INET && address.length != 4) ||
+         (family == PF_INET6 && address.length != 16))) {
       throw new IllegalArgumentException("Invalid address length.");
-
-    int result = 0;
-
-    if(getUseSelectTimeout() && __rtimeout > 0) {
-      result = __select(__socket, true, __rtimeout);
     }
 
-    if(result == 0)
-      result =
-        (address == null ?
-         __recvfrom1(__socket, data, offset, length, __family) :
-         __recvfrom2(__socket, data, offset, length, __family, address));
-
-    if(result < 0) {
-      if(__isErrorEAGAIN())
-        __throwInterruptedIOException();
-      else
-        __throwIOException();
+    if (getUseSelectTimeout() && receiveTimeout > 0) {
+      platform.awaitReady(socket, true, receiveTimeout);
     }
 
-    return result;
+    return platform.recvfrom(socket, data, offset, length, family, address);
   }
 
-  /** Same as {@code read(data, 0, length, null);} */
+  /** Same as {@code read(data, offset, length, null);} */
   public int read(byte[] data, int offset, int length)
     throws IllegalArgumentException, IOException, InterruptedIOException
   {
@@ -633,16 +406,12 @@ public class RawSocket {
     return read(data, 0, data.length, address);
   }
 
-  /** Same as {@code read(address, data, 0, data.length, null);} */
+  /** Same as {@code read(data, 0, data.length, null);} */
   public int read(byte[] data)
     throws IOException, InterruptedIOException
   {
     return read(data, 0, data.length, null);
   }
-
-  private native static int __sendto(int socket, byte[] data, int offset,
-                                     int length, int family, byte[] address,
-                                     int scope_id);
 
   /**
    * Writes packet data to the socket.  The data should not include
@@ -654,7 +423,8 @@ public class RawSocket {
    * @param data The buffer from which to copy the packet data.
    * @param offset The offset into the buffer where the data starts.
    * @param length The number of bytes to write.
-   * @exception IllegalArgumentException If the offset or lengths are invalid.
+   * @exception IllegalArgumentException If the offset or lengths are
+   * invalid, or the address does not match the socket's protocol family.
    * @exception IOException If an I/O error occurs.
    * @exception InterruptedIOException If the write operation times out.
    * @return The number of bytes written.
@@ -662,31 +432,16 @@ public class RawSocket {
   public int write(InetAddress address, byte[] data, int offset, int length)
     throws IllegalArgumentException, IOException, InterruptedIOException
   {
-    int scope_id = __getScopeId(address);
-
-    if(offset < 0 || length < 0 || length > data.length - offset) {
+    if (offset < 0 || length < 0 || length > data.length - offset) {
       throw new IllegalArgumentException("Invalid offset or length.");
     }
 
-    int result = 0;
-
-    if(getUseSelectTimeout() && __stimeout > 0) {
-      result = __select(__socket, false, __stimeout);
+    if (getUseSelectTimeout() && sendTimeout > 0) {
+      platform.awaitReady(socket, false, sendTimeout);
     }
 
-    if(result == 0)
-      result = __sendto(__socket, data, offset, length, __family,
-                        address.getAddress(), scope_id);
-
-    if(result < 0) {
-      if(__isErrorEAGAIN()) {
-        __throwInterruptedIOException();
-      } else {
-        __throwIOException();
-      }
-    }
-
-    return result;
+    return platform.sendto(socket, data, offset, length, family,
+                           address.getAddress(), getScopeId(address));
   }
 
   /** Same as {@code write(address, data, 0, data.length);} */

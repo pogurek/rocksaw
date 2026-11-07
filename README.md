@@ -4,8 +4,6 @@ TravisCI: [![Build Status](https://travis-ci.org/mlaccetti/rocksaw.png?branch=ma
 
 A fork of RockSaw (http://www.savarese.com/software/rocksaw/) that includes Maven support.
 
-Please note that the JNI stuff needs a bit of love to build - the Makefile was mangled (by me/Michael Laccetti).
-
 ### About
 
 RockSaw is a simple API for performing network I/O with raw
@@ -19,62 +17,44 @@ Corporation (www.savarese.com).
 
 ### Requirements
 
-The 1.1.0 version of RockSaw has been compiled and tested on Linux,
-Win32 with Cygwin/MinGW/Winsock or Visual C++, and Mac OS X 10.11.4. It
-should compile on other POSIX systems using the GNU tool chain.
+RockSaw is pure Java: it calls the operating system's socket functions
+through the Foreign Function & Memory API (final in Java 22), so there is
+no JNI library to compile or ship.
 
-No binary distributions are presently released; you will have to compile
-for yourself.
-
-Java 1.8 or greater is required to compile/run.
+  - Java 22 or greater, 64-bit JVM.
+  - Linux (tested on x86_64), macOS or Windows. The macOS and Windows
+    bindings are written from the system headers but have not been tested
+    yet; reports are welcome.
 
 ### Compiling
 
-You must have the JAVA_HOME environment variable set and pointing to
-the directory where the Java Development Kit is installed.  Otherwise,
-the JNI headers will not be found.
+`mvn clean package` builds the JAR. No C compiler, Makefile or JAVA_HOME
+setup is needed.
 
-The project requires `maven` to build; The command `mvn clean package`
-should be sufficient to compile the JAR and associated library.
+The sources are in `src/main/java/com/savarese/rocksaw/net`:
 
-There are very few files in the source tree:
+  - `RawSocket.java` is the public API.
+  - `Platform.java`, `PosixPlatform.java` and `WindowsPlatform.java` bind the
+    native socket functions, constants and struct layouts for each OS.
 
-  - src/main/java Java source code
-  - src/main/native The C JNI source and Makefile
+### Running
 
-#### Note about make
-
-The default Makefile requires GNU make.
-
-#### Win32: Visual C++ (Outdated Instructions)
-
-To compile using Visual C++, you have to override the default
-compiler command, make command, and makefile properties:
-
-  jni.cc
-  jni.make
-  jni.makefile
-
-You can override these on the command line or in build.properties.
-For example, to compile using Visual C++, you would use the
-following command:
-
-  ant -Djni.cc=cl -Djni.make=nmake -Djni.makefile=Makefile.win32 jar
-
-Make sure your JDK_HOME environment variable is set and that
-you've run either the vcvars.bat or vsvars32.bat command
-(depending on the version of Visual C++ you're using) to set
-your paths for the command line tools.
-
-#### Mac OS X
-
-Be sure to set JAVA_HOME to the right location. It will typically be
-something like
-`/Library/Java/JavaVirtualMachines/jdk1.8.0_66.jdk/Contents/Home`.
+RockSaw makes native calls, so grant it native access or the JVM prints
+warnings (and future JDKs will refuse):
 
   ```
-  export JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_66.jdk/Contents/Home
-  mvn clean pacakge
+  java --enable-native-access=ALL-UNNAMED -cp ... YourApp
+  ```
+
+Executable JARs can instead declare `Enable-Native-Access: ALL-UNNAMED` in
+their manifest; the `jar-with-dependencies` artifact already does.
+
+Raw sockets need root/administrator rights. On Linux the `CAP_NET_RAW`
+capability is enough. Without privileges `TestPing` is skipped; to run it
+on Linux without root, use a user and network namespace:
+
+  ```
+  unshare -rn sh -c 'ip link set lo up && mvn -o test'
   ```
 
 ### Licensing
